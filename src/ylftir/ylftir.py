@@ -71,15 +71,15 @@ def gaussian_fwhm(position, amplitude, width):
   return 4 * width * np.sqrt(-np.log(0.5))
 
 class Optim_Gaussian:
-  def __init__(self, positions):
-    self.positions = positions
-
+  def __init__(self):
+    pass
+  
   def __call__(self, x, *args):
     '''
-    args should be in the form amplitude, amplitude, ..., width, width, ... etc.
+    args should be in the form position, position, ..., amplitude, amplitude, ..., width, width, ... etc.
     '''
-    amplitudes, widths = np.array(args).reshape(2, -1)
-    return sum([gaussian(x, self.positions[i], amplitudes[i], widths[i]) for i in range(len(self.positions))])
+    positions, amplitudes, widths = np.array(args).reshape(3, -1)
+    return sum([gaussian(x, positions[i], amplitudes[i], widths[i]) for i in range(len(positions))])
 
 def lorentzian(x, position, amplitude, width):
   return (amplitude * width**2) / (np.power(x - position, 2) + width**2)
@@ -88,15 +88,15 @@ def lorentzian_area(position, amplitude, width):
   return amplitude * np.pi * width
 
 class Optim_Lorentzian:
-  def __init__(self, positions):
-    self.positions = positions
+  def __init__(self):
+    pass
 
   def __call__(self, x, *args):
     '''
-    args should be in the form amplitude, amplitude, ..., width, width, ... etc.
+    args should be in the form position, position, ..., amplitude, amplitude, ..., width, width, ... etc.
     '''
-    amplitudes, widths = np.array(args).reshape(2, -1)
-    return sum([lorentzian(x, self.positions[i], amplitudes[i], widths[i]) for i in range(len(self.positions))])
+    positions, amplitudes, widths = np.array(args).reshape(3, -1)
+    return sum([lorentzian(x, positions[i], amplitudes[i], widths[i]) for i in range(len(positions))])
 
 def linear_baseline_correction(x, y):
   slope = (y[-1] - y[0]) / (x[-1] - x[0])
@@ -204,7 +204,7 @@ def plot_uncorrected(x, y, baseline_residual, simulated, gaussians):
 def ftir_deconvolution(
     x, y,
     fit_func='gaussian', baseline='nodal', peak_finder='second_derivative',
-    positions=None,
+    positions=None, vary_positions=0,
     nodes=None, window_size=50,
     peak_window_size=35, smoothing_size=20
     ):
@@ -213,9 +213,10 @@ def ftir_deconvolution(
   `x` - wavenumbers, sorted
   `y` - absorbance
   `fit_func` - `'gaussian'` or `'lorentzian'`; the fitting function used. defaults to `'gaussian'`
-  `baseline` - `'nodal'` or `'linear'`; baseline correction used. defaults to `'linear'`
+  `baseline` - `'nodal'`, `'linear'`, or `'cubic'`; baseline correction used. defaults to `'linear'`
   `peak_finder` - `'first_derivative'` or `'second_derivative'`; the method for finding peaks if `n` and `positions` is not provided
   `positions` - list of positions for each peak
+  `vary_positions` - percentage by which to constrain the varying of positions as a decimal
   `nodes` - list of wavenumbers in x to consider as nodes for nodal baseline correction
   `window_size` - size of window when using nodal baseline correction
   `peak_window_size` - size of window for sencond derivative peak finding
@@ -226,6 +227,8 @@ def ftir_deconvolution(
     y, residual = nodal_baseline_correction(x, y, nodes=nodes, window_size=window_size)
   elif baseline == 'linear':
     y, residual = linear_baseline_correction(x, y)
+  elif baseline == 'cubic':
+    raise NotImplementedError
 
   # if positions not provided, then we need to do peak finding
   if positions is None:
@@ -237,21 +240,27 @@ def ftir_deconvolution(
   else:
     n = len(positions)
 
-  # setup and solve optimization problems
-  init = [*[1]*n, *[0.1]*n]
-
+  # rescale so numerically feasible
   scale_x = np.max(x) - np.min(x)
-  scale_y = np.max(y) - np.min(y)
+  positions = positions / scale_x
+
+  # setup and solve optimization problems
+  init = [*positions, *[1]*n, *[0.1]*n]
+
+  # constraints
+  pos_lb = [(1 - vary_positions) * pos for pos in positions]
+  pos_ub = [(1 + vary_positions) * pos for pos in positions]
 
   if fit_func == 'gaussian':
-    problem = Optim_Gaussian(positions / scale_x)
+    problem = Optim_Gaussian()
   elif fit_func == 'lorentzian':
-    problem = Optim_Lorentzian(positions / scale_x)
-  solution, cov = curve_fit(problem, x / scale_x, y, init, maxfev=100000, bounds=(0,np.inf))
+    problem = Optim_Lorentzian()
+  solution, cov = curve_fit(problem, x / scale_x, y, init, maxfev=100000, bounds=([*pos_lb, *[0]*(n*2)],[*pos_ub, *[np.inf]*(n*2)]))
 
   # return problem solution as numpy array of parameters
-  amplitudes, widths = np.array(solution).reshape(2, -1)
+  positions, amplitudes, widths = np.array(solution).reshape(3, -1)
   widths *= scale_x
+  positions *= scale_x
 
   return np.array([positions, amplitudes, widths]), residual
 
