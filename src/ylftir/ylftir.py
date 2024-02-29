@@ -1,5 +1,4 @@
 import numpy as np
-import xarray as xr
 import matplotlib.pyplot as plt
 import requests
 from scipy.signal import argrelextrema, savgol_filter
@@ -49,6 +48,9 @@ def import_data_file(file):
       x, y = x[x_ind], y[x_ind]
       return x, y
 
+def normalize_data(x, y):
+  return x, (y - np.min(y)) / (np.max(y) - np.min(y))
+
 def crop(x, y, range):
   diffs1 = np.abs(x - range[0])
   diffs2 = np.abs(x - range[1])
@@ -63,6 +65,10 @@ def gaussian(x, position, amplitude, width):
 
 def gaussian_area(position, amplitude, width):
   return amplitude * np.sqrt(2 * np.pi) * width
+
+def gaussian_fwhm(position, amplitude, width):
+  ''' length of FWHM '''
+  return 4 * width * np.sqrt(-np.log(0.5))
 
 class Optim_Gaussian:
   def __init__(self, positions):
