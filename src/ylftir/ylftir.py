@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 from scipy.signal import argrelextrema, savgol_filter
+from scipy import interpolate
 from scipy.optimize import curve_fit
 
 def import_data_url(url):
@@ -101,6 +102,18 @@ class Optim_Lorentzian:
 def linear_baseline_correction(x, y):
   slope = (y[-1] - y[0]) / (x[-1] - x[0])
   baseline = y[0] + slope * (x - x[0])
+  return y - baseline, baseline
+
+def nearest(x, y, x0):
+  idx = (np.abs(x-x0)).argmin()
+  return y[idx]
+
+def nearest_points(x, y, x0):
+  return [nearest(x, y, x0i) for x0i in x0]
+
+def cubic_baseline_correction(x, y, px, py):
+  tck = interpolate.splrep(px, py)
+  baseline = interpolate.splev(x, tck)
   return y - baseline, baseline
 
 def find_nodes(x, y, window_size=50):
@@ -206,6 +219,7 @@ def ftir_deconvolution(
     fit_func='gaussian', baseline='nodal', peak_finder='second_derivative',
     positions=None, vary_positions=0,
     nodes=None, window_size=50,
+    nodes_x=None, nodes_y=None,
     peak_window_size=35, smoothing_size=20
     ):
   '''
@@ -218,6 +232,8 @@ def ftir_deconvolution(
   `positions` - list of positions for each peak
   `vary_positions` - percentage by which to constrain the varying of positions as a decimal
   `nodes` - list of wavenumbers in x to consider as nodes for nodal baseline correction
+  `nodes_x` - list of x values for cubic baseline correction
+  `nodes_y` - list of y values for cubic baseline correction
   `window_size` - size of window when using nodal baseline correction
   `peak_window_size` - size of window for sencond derivative peak finding
   `smoothing_size` - number of points for Savitzky-Golay polynomial smoothing
@@ -228,7 +244,7 @@ def ftir_deconvolution(
   elif baseline == 'linear':
     y, residual = linear_baseline_correction(x, y)
   elif baseline == 'cubic':
-    raise NotImplementedError
+    y, residual = cubic_baseline_correction(x, y, nodes_x, nodes_y)
 
   # if positions not provided, then we need to do peak finding
   if positions is None:
