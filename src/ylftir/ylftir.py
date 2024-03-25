@@ -4,15 +4,29 @@ import requests
 from scipy.signal import argrelextrema, savgol_filter
 from scipy import interpolate
 from scipy.optimize import curve_fit
+import csv
 
-def import_data_url(url):
+def import_data_url(url, guess=False):
+  '''
+  Import data from URL. Supports space delimited .dpt files or comma separated .csv files, where filetype is automatically detected.
+  Alternatively, if `guess` is set to True, will attempt to guess the delimiter
+  '''
   try:
     response = requests.get(url)
-    if url.endswith('.dpt'):
-      x, y = np.transpose(np.genfromtxt(response.text.splitlines()))
-    elif url.endswith('.csv'):
-      x, y = np.transpose(np.genfromtxt(response.text.splitlines(), delimiter=','))
+    if guess:
+      sniffer = csv.Sniffer()
+      delimiter = sniffer.sniff(response.text).delimiter
+      x, y = np.transpose(np.genfromtxt(response.text.splitlines(), delimiter=delimiter))
+    else:
+      if url.endswith('.dpt'):
+        x, y = np.transpose(np.genfromtxt(response.text.splitlines()))
+      elif url.endswith('.csv'):
+        x, y = np.transpose(np.genfromtxt(response.text.splitlines(), delimiter=','))
 
+    if x is None or y is None:
+      print(f'Error: Unable to parse data from {url}')
+      return None, None
+    
     # sort y w.r.t. x
     # NOTE: if files are guaranteed to be in order (or reverse order) with respect to wavenumber, this is unnecessary
     x_ind = np.argsort(x)
@@ -25,7 +39,11 @@ def import_data_url(url):
     print(f'Error: {e}')
     return None, None
 
-def import_data_file(file):
+def import_data_file(file, guess=False):
+  '''
+  Import data from file. Supports space delimited .dpt files or comma separated .csv files, where filetype is automatically detected.
+  Alternatively, if `guess` is set to True, will attempt to guess the delimiter
+  '''
   try:
     f = open(file, 'r')
   except IOError:
@@ -36,13 +54,22 @@ def import_data_file(file):
     return None, None
   else:
     with f:
-      if file.endswith('.dpt'):
-        x, y = np.transpose(np.genfromtxt(f.read().splitlines()))
-      elif file.endswith('.csv'):
-        x, y = np.transpose(np.genfromtxt(file, delimiter=','))
+      if guess:
+        sniffer = csv.Sniffer()
+        delimiter = sniffer.sniff(f.read()).delimiter
+        x, y = np.transpose(np.genfromtxt(f.read().splitlines(), delimiter=delimiter))
       else:
-        print(f'Error: Unrecognized filetype')
+        if file.endswith('.dpt'):
+          x, y = np.transpose(np.genfromtxt(f.read().splitlines()))
+        elif file.endswith('.csv'):
+          x, y = np.transpose(np.genfromtxt(file, delimiter=','))
+        else:
+          print(f'Error: Unrecognized filetype')
 
+      if x is None or y is None:
+        print(f'Error: Unable to parse data from {file}')
+        return None, None
+      
       # sort y w.r.t. x
       # NOTE: if files are guaranteed to be in order (or reverse order) with respect to wavenumber, this is unnecessary
       x_ind = np.argsort(x)
