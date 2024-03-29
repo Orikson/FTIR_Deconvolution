@@ -5,6 +5,7 @@ from scipy.signal import argrelextrema, savgol_filter
 from scipy import interpolate
 from scipy.optimize import curve_fit
 import csv
+import numbers
 
 def import_data_url(url, guess=False):
   '''
@@ -245,6 +246,7 @@ def ftir_deconvolution(
     x, y,
     fit_func='gaussian', baseline='nodal', peak_finder='second_derivative',
     positions=None, vary_positions=0,
+    constrain_width=(0, np.inf), constrain_amplitude=(0, np.inf),
     nodes=None, window_size=50,
     nodes_x=None, nodes_y=None,
     peak_window_size=35, smoothing_size=20
@@ -258,6 +260,8 @@ def ftir_deconvolution(
   `peak_finder` - `'first_derivative'` or `'second_derivative'`; the method for finding peaks if `n` and `positions` is not provided
   `positions` - list of positions for each peak
   `vary_positions` - percentage by which to constrain the varying of positions as a decimal
+  `constrain_width` - tuple of lower and upper bounds for width, defaults to (0, np.inf); to provide bounds for each peak, provide a tuple for each bound i.e. ((0, 0, 0), (np.inf, 1, 2))
+  `constrain_amplitude` - tuple of lower and upper bounds for amplitude, defaults to (0, np.inf); to provide bounds for each peak, provide a tuple for each bound i.e. ((0, 0, 0), (np.inf, 1, 2))
   `nodes` - list of wavenumbers in x to consider as nodes for nodal baseline correction
   `nodes_x` - list of x values for cubic baseline correction
   `nodes_y` - list of y values for cubic baseline correction
@@ -286,19 +290,39 @@ def ftir_deconvolution(
   # rescale so numerically feasible
   scale_x = np.max(x) - np.min(x)
   positions = positions / scale_x
-
-  # setup and solve optimization problems
-  init = [*positions, *[1]*n, *[0.1]*n]
-
+  
   # constraints
   pos_lb = [(1 - vary_positions) * pos for pos in positions]
   pos_ub = [(1 + vary_positions) * pos for pos in positions]
-
+  
+  bw, tw = constrain_width
+  ba, ta = constrain_amplitude
+  if isinstance(bw, numbers.Number):
+    bw = [bw] * n
+  if isinstance(tw, numbers.Number):
+    tw = [tw] * n
+  if isinstance(ba, numbers.Number):
+    ba = [ba] * n
+  if isinstance(ta, numbers.Number):
+    ta = [ta] * n
+  
+  # rescale constraints
+  bw = [bw[i] / scale_x for i in range(n)]
+  tw = [tw[i] / scale_x for i in range(n)]
+  
+  # problem
   if fit_func == 'gaussian':
     problem = Optim_Gaussian()
   elif fit_func == 'lorentzian':
     problem = Optim_Lorentzian()
-  solution, cov = curve_fit(problem, x / scale_x, y, init, maxfev=100000, bounds=([*pos_lb, *[0]*(n*2)],[*pos_ub, *[np.inf]*(n*2)]))
+  else:
+    print('Error: unrecognized fit function')
+    return None, None
+  
+  # setup and solve optimization problems
+  init = [*positions, *[0.9*min(1, ta[i]) for i in range(n)], *[0.9*min(0.1, tw[i]) for i in range(n)]]
+
+  solution, cov = curve_fit(problem, x / scale_x, y, init, maxfev=100000, bounds=([*pos_lb, *ba, *bw],[*pos_ub, *ta, *tw]))
 
   # return problem solution as numpy array of parameters
   positions, amplitudes, widths = np.array(solution).reshape(3, -1)
