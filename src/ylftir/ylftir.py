@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 from scipy.signal import argrelextrema, savgol_filter
+from scipy.special import erf
 from scipy import interpolate
 from scipy.optimize import curve_fit
 import csv
@@ -70,7 +71,7 @@ def import_data_file(file, guess=False):
       if x is None or y is None:
         print(f'Error: Unable to parse data from {file}')
         return None, None
-      
+
       # sort y w.r.t. x
       # NOTE: if files are guaranteed to be in order (or reverse order) with respect to wavenumber, this is unnecessary
       x_ind = np.argsort(x)
@@ -95,6 +96,9 @@ def gaussian(x, position, amplitude, width):
 def gaussian_area(position, amplitude, width):
   return amplitude * np.sqrt(2 * np.pi) * width
 
+def gaussian_area_cropped(position, amplitude, width, lower_bound, upper_bound):
+  return amplitude * width * np.sqrt(np.pi / 2) * (erf((position - lower_bound)/(width * np.sqrt(2))) - erf((position - upper_bound)/(width * np.sqrt(2))))
+
 def gaussian_fwhm(position, amplitude, width):
   ''' length of FWHM '''
   return 4 * width * np.sqrt(-np.log(0.5))
@@ -102,7 +106,7 @@ def gaussian_fwhm(position, amplitude, width):
 class Optim_Gaussian:
   def __init__(self):
     pass
-  
+
   def __call__(self, x, *args):
     '''
     args should be in the form position, position, ..., amplitude, amplitude, ..., width, width, ... etc.
@@ -116,6 +120,9 @@ def lorentzian(x, position, amplitude, width):
 def lorentzian_area(position, amplitude, width):
   return amplitude * np.pi * width
 
+def lorentzian_area_cropped(position, amplitude, width, lower_bound, upper_bound):
+  return amplitude * width * (np.arctan((position - lower_bound)/width) - np.arctan((position - upper_bound)/width))
+
 class Optim_Lorentzian:
   def __init__(self):
     pass
@@ -126,6 +133,29 @@ class Optim_Lorentzian:
     '''
     positions, amplitudes, widths = np.array(args).reshape(3, -1)
     return sum([lorentzian(x, positions[i], amplitudes[i], widths[i]) for i in range(len(positions))])
+
+class Optim_Problem:
+  def __init__(self, types):
+    '''
+    types is a list of strings `'gaussian'` for gaussian peaks and `'lorentzian'` for lorentzian peaks
+    '''
+    self.types = types
+  
+  def __call__(self, x, *args):
+    '''
+    args should be in the form position, position, ..., amplitude, amplitude, ..., width, width, ... etc.
+    '''
+    positions, amplitudes, widths = np.array(args).reshape(3, -1)
+    
+    inter = np.zeros_like(x)
+    for i, t in enumerate(self.types):
+      if t == 'gaussian':
+        inter += gaussian(x, positions[i], amplitudes[i], widths[i])
+      elif t == 'lorentzian':
+        inter += lorentzian(x, positions[i], amplitudes[i], widths[i])
+      else:
+        raise Exception(f'Unrecognized peak type at i={i}: {t}')
+    return inter
 
 def linear_baseline_correction(x, y):
   slope = (y[-1] - y[0]) / (x[-1] - x[0])
@@ -255,7 +285,7 @@ def ftir_deconvolution(
   Computes full deconvolution of input data given deconvolution parameters
   `x` - wavenumbers, sorted
   `y` - absorbance
-  `fit_func` - `'gaussian'` or `'lorentzian'`; the fitting function used. defaults to `'gaussian'`
+  `fit_func` - `'gaussian'` or `'lorentzian'`; the fitting function used. defaults to `'gaussian'`. alternatively, for each peak, provide a type
   `baseline` - `'nodal'`, `'linear'`, or `'cubic'`; baseline correction used. defaults to `'linear'`
   `peak_finder` - `'first_derivative'` or `'second_derivative'`; the method for finding peaks if `n` and `positions` is not provided
   `positions` - list of positions for each peak
@@ -290,11 +320,11 @@ def ftir_deconvolution(
   # rescale so numerically feasible
   scale_x = np.max(x) - np.min(x)
   positions = positions / scale_x
-  
+
   # constraints
   pos_lb = [(1 - vary_positions) * pos for pos in positions]
   pos_ub = [(1 + vary_positions) * pos for pos in positions]
-  
+
   bw, tw = constrain_width
   ba, ta = constrain_amplitude
   if isinstance(bw, numbers.Number):
@@ -305,20 +335,24 @@ def ftir_deconvolution(
     ba = [ba] * n
   if isinstance(ta, numbers.Number):
     ta = [ta] * n
-  
+
   # rescale constraints
   bw = [bw[i] / scale_x for i in range(n)]
   tw = [tw[i] / scale_x for i in range(n)]
-  
+
   # problem
   if fit_func == 'gaussian':
     problem = Optim_Gaussian()
   elif fit_func == 'lorentzian':
     problem = Optim_Lorentzian()
   else:
-    print('Error: unrecognized fit function')
-    return None, None
-  
+    try:
+      _ = iter(fit_func)
+      problem = Optim_Problem(fit_func)
+    except:
+      raise Exception(f'Unrecognized fit function {fit_func}')
+      return None, None
+
   # setup and solve optimization problems
   init = [*positions, *[0.9*min(1, ta[i]) for i in range(n)], *[0.9*min(0.1, tw[i]) for i in range(n)]]
 
@@ -333,7 +367,7 @@ def ftir_deconvolution(
 
 def simulated_gaussians(x, gaussians):
   '''
-  Returns the sum of input gaussians along input x
+  Returns the sum of input gaussians along input x, and individual peaks
   `x` - wavenumbers, sorted
   `gaussians` - list in shape (3,N) where N is the number of gaussians, in the form [positions, amplitudes, widths]
   '''
@@ -343,10 +377,86 @@ def simulated_gaussians(x, gaussians):
 
 def simulated_lorentzians(x, lorentzians):
   '''
-  Returns the sum of input lorentzians along input x
+  Returns the sum of input lorentzians along input x, and individual peaks
   `x` - wavenumbers, sorted
   `lorentzians` - list in shape (3,N) where N is the number of lorentzians, in the form [positions, amplitudes, widths]
   '''
   positions, amplitudes, widths = lorentzians
   res = np.array([lorentzian(x, positions[i], amplitudes[i], widths[i]) for i in range(len(positions))])
   return np.sum(res, axis=0), res
+
+def simulated(x, peaks, types):
+  '''
+  Returns the sum of input peaks along input x, and individual peaks
+  `x` - wavenumbers, sorted
+  `peaks` - list in shape (3,N) where N is the number of peaks, in the form [positions, amplitudes, widths]
+  `types` - either `'gaussian'`, `'lorentzian'`, or a list of these, one for each peak
+  '''
+  if types == 'gaussian':
+    return simulated_gaussians(x, peaks)
+  elif types == 'lorentzian':
+    return simulated_lorentzians(x, peaks)
+
+  positions, amplitudes, widths = peaks
+  res = np.zeros((len(types), len(x)))
+  for i, t in enumerate(types):
+    if t == 'gaussian':
+      res[i] = gaussian(x, positions[i], amplitudes[i], widths[i])
+    elif t == 'lorentzian':
+      res[i] = lorentzian(x, positions[i], amplitudes[i], widths[i])
+    else:
+      raise Exception(f'Unrecognized peak type at i={i}: {t}')
+  return np.sum(res, axis=0), res
+
+def get_areas(peaks, types):
+  '''
+  Get peak areas
+  `peaks` - list in shape (3,N) where N is the number of peaks, in the form [positions, amplitudes, widths]
+  `types` - either `'gaussian'`, `'lorentzian'`, or a list of these, one for each peak
+  '''
+  positions, amplitudes, widths = peaks
+
+  if types == 'gaussian':
+    return np.array([gaussian_area(positions[i], amplitudes[i], widths[i]) for i in range(len(positions))])
+  if types == 'lorentzian':
+    return np.array([lorentzian_area(positions[i], amplitudes[i], widths[i]) for i in range(len(positions))])
+  
+  areas = []
+  for i, t in enumerate(types):
+    if t == 'gaussian':
+      areas.append(gaussian_area(positions[i], amplitudes[i], widths[i]))
+    elif t == 'lorentzian':
+      areas.append(lorentzian_area(positions[i], amplitudes[i], widths[i]))
+    else:
+      raise Exception(f'Unrecognized peak type at i={i}: {t}')
+  return np.array(areas)
+
+def get_areas_cropped(peaks, types, crop_range):
+  '''
+  Get cropped peak areas
+  `peaks` - list in shape (3,N) where N is the number of peaks, in the form [positions, amplitudes, widths]
+  `types` - either `'gaussian'`, `'lorentzian'`, or a list of these, one for each peak
+  `crop_range` - tuple in the form `(lower_bounds, upper_bounds)` where `lower_bounds` and `upper_bounds` is either a number or a tuple corresponding to each peak
+  '''
+  positions, amplitudes, widths = peaks
+
+  lower_bounds, upper_bounds = crop_range
+  if isinstance(lower_bounds, numbers.Number):
+    lower_bounds = [lower_bounds] * len(positions)
+  if isinstance(upper_bounds, numbers.Number):
+    upper_bounds = [upper_bounds] * len(positions)
+
+  if types == 'gaussian':
+    return np.array([gaussian_area_cropped(positions[i], amplitudes[i], widths[i], lower_bounds[i], upper_bounds[i]) for i in range(len(positions))])
+  if types == 'lorentzian':
+    return np.array([lorentzian_area_cropped(positions[i], amplitudes[i], widths[i], lower_bounds[i], upper_bounds[i]) for i in range(len(positions))])
+  
+  areas = []
+  for i, t in enumerate(types):
+    if t == 'gaussian':
+      areas.append(gaussian_area_cropped(positions[i], amplitudes[i], widths[i], lower_bounds[i], upper_bounds[i]))
+    elif t == 'lorentzian':
+      areas.append(lorentzian_area_cropped(positions[i], amplitudes[i], widths[i], lower_bounds[i], upper_bounds[i]))
+    else:
+      raise Exception(f'Unrecognized peak type at i={i}: {t}')
+  return np.array(areas)
